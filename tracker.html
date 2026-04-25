@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <title>SE1 VMC Tracker</title>
+    <!-- 1. MediaPipe 필수 라이브러리 전체 주소 기입 -->
+    <script src="https://jsdelivr.net" crossorigin="anonymous"></script>
+    <style>
+        body { margin: 0; background: #000; color: #fff; font-family: -apple-system, sans-serif; font-size: 11px; overflow: hidden; }
+        #v-container { width: 100%; height: 35vh; background: #222; }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        #controls { padding: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; background: #111; }
+        input, button, select { background: #333; color: #fff; border: 1px solid #555; padding: 12px; border-radius: 4px; font-size: 12px; }
+        .status { grid-column: span 2; color: #0f0; font-weight: bold; min-height: 1.2em; }
+        .full { grid-column: span 2; }
+    </style>
+</head>
+<body>
+    <div id="v-container"><video id="webcam" autoplay playsinline muted></video></div>
+    <div id="controls">
+        <div class="status" id="status">상태: 라이브러리 대기 중...</div>
+        <input type="text" id="ip" placeholder="PC IP 입력">
+        <button id="connectBtn">1. 서버 연결</button>
+        <select id="res">
+            <option value="160">160px (SE1 최적)</option>
+            <option value="320" selected>320px (권장)</option>
+        </select>
+        <select id="fps">
+            <option value="15">15 FPS</option>
+            <option value="24">24 FPS</option>
+            <option value="30" selected>30 FPS</option>
+        </select>
+        <label style="display:flex; align-items:center;"><input type="checkbox" id="eyeTrack"> 눈동자 추적</label>
+        <button id="startBtn" class="full">2. 트래킹 시작</button>
+    </div>
+
+    <script>
+        var vision = window.tasksVision;
+        var faceLandmarker;
+        var video = document.getElementById("webcam");
+        var statusTxt = document.getElementById("status");
+        var ws;
+        var lastVideoTime = -1;
+
+        // VMC/OSC 바이너리 패킷 생성 (Little Endian 처리에 유의)
+        function createVmcPacket(name, value) {
+            var address = "/VMC/Ext/Blend/Val\0\0\0";
+            var tag = ",sf\0";
+            var namePadded = name + "\0".repeat(4 - (name.length % 4 || 4));
+            var buf = new ArrayBuffer(address.length + tag.length + namePadded.length + 4);
+            var view = new DataView(buf);
+            var offset = 0;
+            for (var i = 0; i < address.length; i++) view.setUint8(offset++, address.charCodeAt(i));
+            for (var i = 0; i < tag.length; i++) view.setUint8(offset++, tag.charCodeAt(i));
+            for (var i = 0; i < namePadded.length; i++) view.setUint8(offset++, namePadded.charCodeAt(i));
+            view.setFloat32(offset, value, false); // VMC 규격: Big-Endian
+            return buf;
+        }
+
+        async function init() {
+            if (!vision) {
+                statusTxt.innerText = "상태: 라이브러리 로드 안됨 (인터넷 확인)";
+                return;
+            }
+            try {
+                statusTxt.innerText = "상태: 모델 다운로드 중 (약 10초)...";
+                // 2. WASM 라이브러리 전체 주소
+                var fileset = await vision.FilesetResolver.forVisionTasks(
+                    "https://jsdelivr.net"
+                );
+                
+                // 3. 모델 파일 전체 주소
+                faceLandmarker = await vision.FaceLandmarker.createFromOptions(fileset, {
+                    baseOptions: { 
+                        modelAssetPath: "https://googleapis.com",
+                        delegate: "GPU" 
+                    },
+                    outputFaceBlendshapes: true,
+                    runningMode: "VIDEO",
+                    numFaces: 1
+                });
+                statusTxt.innerText = "상태: 모든 준비 완료!";
+            } catch (e) {
+                statusTxt.innerText = "상태: 초기화 실패! (RAM 부족일 수 있음)";
+                console.error(e);
+            }
+        }
+
+        function predictWebcam() {
+            if (video.currentTime !== lastVideoTime) {
+                lastVideoTime = video.currentTime;
+                try {
+                    var result = faceLandmarker.detectForVideo(video, performance.now());
+                    if (result.faceBlendshapes && result.faceBlendshapes.length > 0 && ws && ws.readyState === 1) {
+                        var blendshapes = result.faceBlendshapes[0].categories;
+                        var useEye = document.getElementById("eyeTrack").checked;
+                        for (var i = 0; i < blendshapes.length; i++) {
+                            var s = blendshapes[i];
+                            if (!useEye && s.categoryName.indexOf("EyeLook") !== -1) continue;
+                            ws.send(createVmcPacket(s.categoryName, s.score));
+                        }
+                        // VMC 종료 신호
+                        var okBuf = new TextEncoder().encode("/VMC/Ext/Ok\0\0\0\0,i\0\0\0\0\0\x01");
+                        ws.send(okBuf);
+                    }
+                } catch (e) {}
+            }
+            requestAnimationFrame(predictWebcam);
+        }
+
+        document.getElementById("connectBtn").onclick = function() {
+            var ip = document.getElementById("ip").value;
+            if(!ip) return alert("PC IP를 입력하세요");
+            statusTxt.innerText = "상태: 서버 연결 시도...";
+            ws = new WebSocket("ws://" + ip + ":8080");
+            ws.binaryType = "arraybuffer";
+            ws.onopen = function() { statusTxt.innerText = "상태: 서버 연결 성공!"; };
+            ws.onerror = function() { statusTxt.innerText = "상태: 연결 실패 (IP/서버 확인)"; };
+        };
+
+        document.getElementById("startBtn").onclick = async function() {
+            if(!faceLandmarker) return alert("모델이 아직 로드되지 않았습니다.");
+            try {
+                var constraints = { 
+                    video: { 
+                        width: parseInt(document.getElementById("res").value), 
+                        frameRate: parseInt(document.getElementById("fps").value),
+                        facingMode: "user" 
+                    } 
+                };
+                var stream = await navigator.mediaDevices.getUserMedia(constraints);
+                video.srcObject = stream;
+                video.onloadeddata = function() { predictWebcam(); };
+                document.getElementById("startBtn").style.display = "none";
+            } catch (e) {
+                alert("카메라 에러: " + e.message);
+            }
+        };
+
+        // 초기화 지연 (구형 기기 안정성)
+        window.onload = function() { setTimeout(init, 1500); };
+    </script>
+</body>
+</html>
