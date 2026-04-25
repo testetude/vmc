@@ -78,12 +78,12 @@
             statusTxt.innerText = "상태: 모델 다운로드 중 (약 10초)...";
             // 주소 부분은 사용자님이 직접 넣으신 그 긴 주소들을 그대로 유지하세요!
             var fileset = await vision.FilesetResolver.forVisionTasks(
-                "https://jsdelivr.net"
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
             );
             
             faceLandmarker = await vision.FaceLandmarker.createFromOptions(fileset, {
                 baseOptions: { 
-                    modelAssetPath: "https://googleapis.com",
+                    modelAssetPath: "https://googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
                     delegate: "GPU" 
                 },
                 outputFaceBlendshapes: true,
