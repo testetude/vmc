@@ -3,7 +3,9 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-    <title>SE1 VMC Tracker</title>
+    <title>SE1 Lite Tracker</title>
+    <!-- [중요] 아래 주소에서 띄어쓰기(공백)를 모두 지워서 연결해 넣으세요 -->
+    <script src="https://jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/vision_bundle.js" crossorigin="anonymous" onload="startInit()"></script>
     <style>
         body { margin: 0; background: #000; color: #fff; font-family: -apple-system, sans-serif; font-size: 11px; overflow: hidden; }
         #v-container { width: 100%; height: 35vh; background: #222; }
@@ -13,17 +15,15 @@
         .status { grid-column: span 2; color: #0f0; font-weight: bold; min-height: 1.2em; }
         .full { grid-column: span 2; }
     </style>
-    <!-- 구글 공식 서버 주소로 변경 (공백 확인 필수) -->
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/vision_bundle.js" crossorigin="anonymous" onload="libLoaded()"></script>
 </head>
 <body>
     <div id="v-container"><video id="webcam" autoplay playsinline muted></video></div>
     <div id="controls">
-        <div class="status" id="status">상태: 파일 다운로드 시작 중...</div>
+        <div class="status" id="status">상태: 파일 다운로드 중...</div>
         <input type="text" id="ip" placeholder="PC IP 입력">
         <button id="connectBtn">1. 서버 연결</button>
         <select id="res">
-            <option value="160">160px (최적)</option>
+            <option value="160">160px (SE1 최적)</option>
             <option value="320" selected>320px (권장)</option>
         </select>
         <select id="fps">
@@ -41,11 +41,10 @@
     var statusTxt = document.getElementById("status");
     var ws;
     var lastVideoTime = -1;
-    var isLibReady = false;
 
-    function libLoaded() {
-        isLibReady = true;
-        statusTxt.innerText = "상태: 라이브러리 로드 완료! 모델 준비...";
+    // 라이브러리 로드 완료 시 실행
+    function startInit() {
+        statusTxt.innerText = "상태: 라이브러리 로드 완료. 모델 준비 중...";
         setTimeout(init, 500);
     }
 
@@ -56,15 +55,15 @@
         }
         try {
             var vision = window.tasksVision;
-            // 주소 잘림 방지를 위해 문자열 결합 방식 사용
-            var wasmPath = "https://cdn.jsdelivr.net" + "/npm/@mediapipe/tasks-vision@0.10.3/wasm";
-            var modelPath = "https://storage.googleapis.com" + "/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+            // [중요] 아래 두 주소도 띄어쓰기(공백)를 모두 지워서 연결하세요
+            var wPath = "https://jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm";
+            var mPath = "https://googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 
-            var fileset = await vision.FilesetResolver.forVisionTasks(wasmPath);
+            var fileset = await vision.FilesetResolver.forVisionTasks(wPath.replace(/\s/g, ""));
             
             faceLandmarker = await vision.FaceLandmarker.createFromOptions(fileset, {
                 baseOptions: { 
-                    modelAssetPath: modelPath,
+                    modelAssetPath: mPath.replace(/\s/g, ""),
                     delegate: "GPU" 
                 },
                 outputFaceBlendshapes: true,
@@ -73,11 +72,11 @@
             });
             statusTxt.innerText = "상태: 모든 준비 완료!";
         } catch (e) {
-            statusTxt.innerText = "상태: 초기화 에러 - " + e.message;
+            statusTxt.innerText = "상태: 에러 - " + e.message;
         }
     }
 
-    // VMC 패킷 생성 (수정 금지)
+    // VMC 데이터 전송 로직
     function createVmcPacket(name, value) {
         var address = "/VMC/Ext/Blend/Val\0\0\0";
         var tag = ",sf\0";
@@ -94,7 +93,7 @@
 
     document.getElementById("connectBtn").onclick = function() {
         var ip = document.getElementById("ip").value;
-        if(!ip) return alert("IP를 입력하세요");
+        if(!ip) return alert("IP 입력 필요");
         ws = new WebSocket("ws://" + ip + ":8080");
         ws.binaryType = "arraybuffer";
         ws.onopen = function() { statusTxt.innerText = "상태: 서버 연결 성공!"; };
@@ -102,7 +101,7 @@
     };
 
     document.getElementById("startBtn").onclick = async function() {
-        if(!faceLandmarker) return alert("모델 로딩 중입니다.");
+        if(!faceLandmarker) return alert("로딩 중");
         try {
             var stream = await navigator.mediaDevices.getUserMedia({
                 video: { width: parseInt(document.getElementById("res").value), facingMode: "user" }
@@ -110,7 +109,7 @@
             video.srcObject = stream;
             video.onloadeddata = function() { predictWebcam(); };
             document.getElementById("startBtn").style.display = "none";
-        } catch (e) { alert("카메라 에러: " + e.message); }
+        } catch (e) { alert(e.message); }
     };
 
     function predictWebcam() {
@@ -131,10 +130,6 @@
         }
         requestAnimationFrame(predictWebcam);
     }
-
-    setTimeout(function() {
-        if (!isLibReady) statusTxt.innerText = "상태: 로딩 지연... 주소창을 눌러 '다시 로드' 해보세요.";
-    }, 8000);
 </script>
 </body>
 </html>
