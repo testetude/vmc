@@ -4,51 +4,56 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
     <title>SE1 Tracker</title>
-    <!-- jsdelivr 대신 unpkg 서버를 시도해 봅니다. 주소 끝까지 확인 필수! -->
+    <!-- [중요] 주소 끝이 .js로 끝나는 번들 파일을 사용하세요 -->
     <script src="vision_bundle.js"></script>
     <style>
-        body { margin: 0; background: #000; color: #fff; font-family: sans-serif; font-size: 11px; }
-        #status { color: #0f0; font-weight: bold; padding: 15px; background: #111; border-bottom: 1px solid #333; }
-        #controls { padding: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
-        input, button, select { background: #333; color: #fff; border: 1px solid #555; padding: 15px; border-radius: 4px; font-size: 14px; }
+        body { margin: 0; background: #000; color: #fff; font-family: sans-serif; font-size: 11px; overflow: hidden; }
+        #v-container { width: 100%; height: 35vh; background: #222; }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        #controls { padding: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; background: #111; }
+        input, button, select { background: #333; color: #fff; border: 1px solid #555; padding: 12px; border-radius: 4px; }
+        #status { grid-column: span 2; color: #0f0; font-weight: bold; min-height: 1.2em; }
         .full { grid-column: span 2; }
     </style>
 </head>
 <body>
-    <div id="status">상태: 라이브러리 찾는 중...</div>
+    <div id="v-container"><video id="webcam" autoplay playsinline muted></video></div>
     <div id="controls">
-        <input type="text" id="ip" placeholder="PC IP 입력" class="full">
+        <div id="status">상태: 라이브러리 파일 확인 중...</div>
+        <input type="text" id="ip" placeholder="PC IP 입력">
         <button id="connectBtn">1. 서버 연결</button>
-        <button id="startBtn">2. 트래킹 시작</button>
+        <select id="res">
+            <option value="160">160px (SE1 최적)</option>
+            <option value="320" selected>320px</option>
+        </select>
+        <button id="startBtn" class="full">2. 트래킹 시작</button>
     </div>
-    <video id="webcam" autoplay playsinline muted style="width:100%; height:auto; background:#222;"></video>
 
 <script>
-    var statusTxt = document.getElementById("status");
     var faceLandmarker;
+    var video = document.getElementById("webcam");
+    var statusTxt = document.getElementById("status");
     var ws;
+    var lastVideoTime = -1;
 
-    // 라이브러리 인식 루프 (인식될 때까지 0.5초마다 확인)
-    function checkLibrary() {
-        if (window.tasksVision) {
-            statusTxt.innerText = "상태: 라이브러리 인식 성공! 모델 로딩 중...";
-            initModel();
-        } else {
-            statusTxt.innerText = "상태: 라이브러리 대기 중... (잠시만 기다리세요)";
-            setTimeout(checkLibrary, 500);
+    // 1. 구형 엔진 호환을 위한 초기화 함수 (async 제거)
+    function init() {
+        if (!window.tasksVision) {
+            statusTxt.innerText = "상태: 라이브러리 인식 실패. (파일 확인 필요)";
+            return;
         }
-    }
 
-    function initModel() {
+        statusTxt.innerText = "상태: 모델 다운로드 시작...";
         var vision = window.tasksVision;
-        // 주소 끝이 /wasm 인지 확인
-        vision.FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.34/wasm")
+        
+        // 주소 결합 (시스템 자름 방지)
+        var wPath = "https://jsdelivr.net" + "/npm/@mediapipe/tasks-vision@0.10.34/wasm";
+        var mPath = "https://googleapis.com" + "/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+
+        vision.FilesetResolver.forVisionTasks(wPath)
             .then(function(fileset) {
                 return vision.FaceLandmarker.createFromOptions(fileset, {
-                    baseOptions: { 
-                        modelAssetPath: "https://googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
-                        delegate: "GPU" 
-                    },
+                    baseOptions: { modelAssetPath: mPath, delegate: "GPU" },
                     outputFaceBlendshapes: true,
                     runningMode: "VIDEO"
                 });
@@ -58,30 +63,67 @@
                 statusTxt.innerText = "상태: 모든 준비 완료!";
             })
             .catch(function(err) {
-                statusTxt.innerText = "상태: 오류 - " + err.message;
+                statusTxt.innerText = "상태: 에러 - " + err.message;
             });
     }
 
-    // 서버 연결 및 카메라 로직은 이전과 동일하되, 에러 체크 강화
+    // 2. 서버 연결
     document.getElementById("connectBtn").onclick = function() {
         var ip = document.getElementById("ip").value;
-        if (!ip) return alert("IP를 입력하세요");
+        if(!ip) return;
         ws = new WebSocket("ws://" + ip + ":8080");
+        ws.binaryType = "arraybuffer";
         ws.onopen = function() { statusTxt.innerText = "상태: 서버 연결 성공!"; };
-        ws.onerror = function() { statusTxt.innerText = "상태: 연결 실패 (IP 확인)"; };
+        ws.onerror = function() { statusTxt.innerText = "상태: 연결 실패"; };
     };
 
+    // 3. 트래킹 시작 (getUserMedia 호환성 처리)
     document.getElementById("startBtn").onclick = function() {
-        if (!faceLandmarker) return alert("로딩 중입니다.");
-        navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } })
-            .then(function(stream) {
-                document.getElementById("webcam").srcObject = stream;
-                statusTxt.innerText = "상태: 트래킹 가동 중!";
-                // 트래킹 실행 루프 호출 (생략된 predict 함수 부분)
-            });
+        if(!faceLandmarker) { alert("모델 로딩 중"); return; }
+        navigator.mediaDevices.getUserMedia({
+            video: { width: parseInt(document.getElementById("res").value), facingMode: "user" }
+        }).then(function(stream) {
+            video.srcObject = stream;
+            video.onloadeddata = function() { predict(); };
+            document.getElementById("startBtn").style.display = "none";
+        }).catch(function(e) { alert(e.message); });
     };
 
-    window.onload = checkLibrary;
+    // 4. 트래킹 루프
+    function predict() {
+        if (video.currentTime !== lastVideoTime) {
+            lastVideoTime = video.currentTime;
+            try {
+                var result = faceLandmarker.detectForVideo(video, performance.now());
+                if (result.faceBlendshapes && result.faceBlendshapes.length > 0 && ws && ws.readyState === 1) {
+                    var shapes = result.faceBlendshapes[0].categories;
+                    for (var i = 0; i < shapes.length; i++) {
+                        // 필요한 데이터만 전송 (VMC 패킷 생성 로직 호출)
+                        ws.send(createVmcPacket(shapes[i].categoryName, shapes[i].score));
+                    }
+                }
+            } catch (e) {}
+        }
+        requestAnimationFrame(predict);
+    }
+
+    // VMC 패킷 생성 (생략 불가)
+    function createVmcPacket(name, value) {
+        var address = "/VMC/Ext/Blend/Val\0\0\0";
+        var tag = ",sf\0";
+        var namePadded = name + "\0".repeat(4 - (name.length % 4 || 4));
+        var buf = new ArrayBuffer(address.length + tag.length + namePadded.length + 4);
+        var view = new DataView(buf);
+        var offset = 0;
+        for (var i = 0; i < address.length; i++) view.setUint8(offset++, address.charCodeAt(i));
+        for (var i = 0; i < tag.length; i++) view.setUint8(offset++, tag.charCodeAt(i));
+        for (var i = 0; i < namePadded.length; i++) view.setUint8(offset++, namePadded.charCodeAt(i));
+        view.setFloat32(offset, value, false);
+        return buf;
+    }
+
+    // 초기화 대기 시간 2초로 연장
+    window.onload = function() { setTimeout(init, 2000); };
 </script>
 </body>
 </html>
