@@ -3,29 +3,33 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-    <title>SE1 Tracker</title>
-    <!-- [중요] 주소 끝이 .js로 끝나는 번들 파일을 사용하세요 -->
-    <script src="vision_bundle.js"></script>
+    <title>SE1 VMC Tracker</title>
     <style>
-        body { margin: 0; background: #000; color: #fff; font-family: sans-serif; font-size: 11px; overflow: hidden; }
-        #v-container { width: 100%; height: 35vh; background: #222; }
+        body { margin: 0; background: #000; color: #fff; font-family: -apple-system, sans-serif; font-size: 11px; overflow: hidden; }
+        #v-container { width: 100%; height: 35vh; background: #222; position: relative; }
         video { width: 100%; height: 100%; object-fit: cover; }
         #controls { padding: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; background: #111; }
-        input, button, select { background: #333; color: #fff; border: 1px solid #555; padding: 12px; border-radius: 4px; }
-        #status { grid-column: span 2; color: #0f0; font-weight: bold; min-height: 1.2em; }
+        input, button, select { background: #333; color: #fff; border: 1px solid #555; padding: 12px; border-radius: 4px; font-size: 12px; }
+        #status { grid-column: span 2; color: #0f0; font-weight: bold; min-height: 1.2em; padding: 5px 0; }
         .full { grid-column: span 2; }
     </style>
 </head>
 <body>
     <div id="v-container"><video id="webcam" autoplay playsinline muted></video></div>
     <div id="controls">
-        <div id="status">상태: 라이브러리 파일 확인 중...</div>
-        <input type="text" id="ip" placeholder="PC IP 입력">
+        <div id="status">상태: 시스템 대기 중...</div>
+        <input type="text" id="ip" placeholder="PC IP (예: 192.168.0.5)">
         <button id="connectBtn">1. 서버 연결</button>
         <select id="res">
             <option value="160">160px (SE1 최적)</option>
             <option value="320" selected>320px</option>
         </select>
+        <select id="fps">
+            <option value="15">15 FPS</option>
+            <option value="24">24 FPS</option>
+            <option value="30" selected>30 FPS</option>
+        </select>
+        <label style="display:flex; align-items:center;"><input type="checkbox" id="eyeTrack"> 눈동자 추적</label>
         <button id="startBtn" class="full">2. 트래킹 시작</button>
     </div>
 
@@ -36,26 +40,33 @@
     var ws;
     var lastVideoTime = -1;
 
-    // 1. 구형 엔진 호환을 위한 초기화 함수 (async 제거)
-    function init() {
-        if (!window.tasksVision) {
-            statusTxt.innerText = "상태: 라이브러리 인식 실패. (파일 확인 필요)";
-            return;
-        }
+    // 라이브러리 모듈 동적 로드 (확장자 및 문법 오류 해결)
+    function loadLibrary() {
+        statusTxt.innerText = "상태: 라이브러리 로딩 중...";
+        import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.34/vision_bundle.mjs')
+            .then(function(mod) {
+                window.tasksVision = mod;
+                statusTxt.innerText = "상태: 라이브러리 로드 성공! 모델 준비...";
+                initModels();
+            })
+            .catch(function(err) {
+                statusTxt.innerText = "상태: 로드 실패 - " + err.message;
+            });
+    }
 
-        statusTxt.innerText = "상태: 모델 다운로드 시작...";
+    function initModels() {
         var vision = window.tasksVision;
-        
-        // 주소 결합 (시스템 자름 방지)
-        var wPath = "https://jsdelivr.net" + "/npm/@mediapipe/tasks-vision@0.10.34/wasm";
-        var mPath = "https://googleapis.com" + "/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+        // 주소 잘림 방지를 위한 결합 방식
+        var wPath = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.34/wasm";
+        var mPath = "https://googleapis.com/mediapipe-assets/face_landmarker.task";
 
         vision.FilesetResolver.forVisionTasks(wPath)
             .then(function(fileset) {
                 return vision.FaceLandmarker.createFromOptions(fileset, {
                     baseOptions: { modelAssetPath: mPath, delegate: "GPU" },
                     outputFaceBlendshapes: true,
-                    runningMode: "VIDEO"
+                    runningMode: "VIDEO",
+                    numFaces: 1
                 });
             })
             .then(function(landmarker) {
@@ -63,33 +74,37 @@
                 statusTxt.innerText = "상태: 모든 준비 완료!";
             })
             .catch(function(err) {
-                statusTxt.innerText = "상태: 에러 - " + err.message;
+                statusTxt.innerText = "상태: 모델 초기화 에러 - " + err.message;
             });
     }
 
-    // 2. 서버 연결
+    // 서버 연결 (VmcRelay.exe와 통신)
     document.getElementById("connectBtn").onclick = function() {
         var ip = document.getElementById("ip").value;
-        if(!ip) return;
+        if(!ip) return alert("PC IP를 입력하세요");
+        statusTxt.innerText = "상태: 서버 연결 시도...";
         ws = new WebSocket("ws://" + ip + ":8080");
         ws.binaryType = "arraybuffer";
         ws.onopen = function() { statusTxt.innerText = "상태: 서버 연결 성공!"; };
-        ws.onerror = function() { statusTxt.innerText = "상태: 연결 실패"; };
+        ws.onerror = function() { statusTxt.innerText = "상태: 연결 실패 (IP 확인)"; };
     };
 
-    // 3. 트래킹 시작 (getUserMedia 호환성 처리)
+    // 트래킹 시작
     document.getElementById("startBtn").onclick = function() {
-        if(!faceLandmarker) { alert("모델 로딩 중"); return; }
+        if(!faceLandmarker) return alert("로딩 중입니다.");
         navigator.mediaDevices.getUserMedia({
-            video: { width: parseInt(document.getElementById("res").value), facingMode: "user" }
+            video: { 
+                width: parseInt(document.getElementById("res").value), 
+                frameRate: parseInt(document.getElementById("fps").value),
+                facingMode: "user" 
+            }
         }).then(function(stream) {
             video.srcObject = stream;
             video.onloadeddata = function() { predict(); };
             document.getElementById("startBtn").style.display = "none";
-        }).catch(function(e) { alert(e.message); });
+        }).catch(function(e) { alert("카메라 에러: " + e.message); });
     };
 
-    // 4. 트래킹 루프
     function predict() {
         if (video.currentTime !== lastVideoTime) {
             lastVideoTime = video.currentTime;
@@ -97,17 +112,21 @@
                 var result = faceLandmarker.detectForVideo(video, performance.now());
                 if (result.faceBlendshapes && result.faceBlendshapes.length > 0 && ws && ws.readyState === 1) {
                     var shapes = result.faceBlendshapes[0].categories;
+                    var useEye = document.getElementById("eyeTrack").checked;
                     for (var i = 0; i < shapes.length; i++) {
-                        // 필요한 데이터만 전송 (VMC 패킷 생성 로직 호출)
-                        ws.send(createVmcPacket(shapes[i].categoryName, shapes[i].score));
+                        var s = shapes[i];
+                        if (!useEye && s.categoryName.indexOf("EyeLook") !== -1) continue;
+                        ws.send(createVmcPacket(s.categoryName, s.score));
                     }
+                    // VMC OK 패킷
+                    var ok = new Uint8Array([47,86,77,67,47,69,120,116,47,79,107,0,0,0,0,0,44,105,0,0,0,0,0,1]);
+                    ws.send(ok);
                 }
             } catch (e) {}
         }
         requestAnimationFrame(predict);
     }
 
-    // VMC 패킷 생성 (생략 불가)
     function createVmcPacket(name, value) {
         var address = "/VMC/Ext/Blend/Val\0\0\0";
         var tag = ",sf\0";
@@ -122,8 +141,7 @@
         return buf;
     }
 
-    // 초기화 대기 시간 2초로 연장
-    window.onload = function() { setTimeout(init, 2000); };
+    window.onload = function() { setTimeout(loadLibrary, 1000); };
 </script>
 </body>
 </html>
